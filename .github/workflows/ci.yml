@@ -27,8 +27,9 @@ jobs:
           docker run --rm dumpling-backup:ci; code=$?
           set -e
           test "$code" -eq 2
-  # The built image against a real PostgreSQL and a real S3 API (MinIO): one backup in `once` mode must
-  # exit 0, report "verified", and leave exactly one object; a wrong password must exit 1 and leave none.
+  # The built image against a real PostgreSQL and an S3 API (s3rver, already a dev dependency, so no
+  # third-party image to pull): one backup in `once` mode must exit 0, report "verified", and leave
+  # exactly one object that pg_restore loads with every row; a wrong password must exit 1 and leave none.
   image-e2e:
     runs-on: ubuntu-24.04
     needs: test
@@ -42,13 +43,18 @@ jobs:
         options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - run: docker build --build-arg PG_MAJOR=17 -t dumpling-backup:e2e .
-      - name: start MinIO and create the bucket (a service container cannot take a command)
+      - name: start a fake S3 on the host
         run: |
-          docker run -d --name minio --network host -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9000/minio/health/live && break; sleep 1; done
-          docker run --rm --network host --entrypoint sh amazon/aws-cli:latest -c \
-            "AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 mb s3://backups"
+          mkdir -p /tmp/s3
+          (npx s3rver -d /tmp/s3 --address 0.0.0.0 --port 4568 --configure-bucket backups > s3rver.log 2>&1 &)
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:4568/ && break; sleep 1; done
+          curl -s -o /dev/null -w "s3rver answers: %{http_code}\n" http://127.0.0.1:4568/
       - name: seed the database
         run: |
           docker run --rm --network host -e PGPASSWORD=pgpass postgres:17 \
@@ -57,32 +63,27 @@ jobs:
         run: |
           docker run --rm --network host \
             -e DATABASE_URL='postgresql://postgres:pgpass@127.0.0.1:5432/app?sslmode=disable' \
-            -e S3_ENDPOINT=http://127.0.0.1:9000 -e S3_FORCE_PATH_STYLE=true -e S3_BUCKET=backups \
-            -e S3_ACCESS_KEY_ID=minioadmin -e S3_SECRET_ACCESS_KEY=minioadmin \
+            -e S3_ENDPOINT=http://127.0.0.1:4568 -e S3_FORCE_PATH_STYLE=true -e S3_BUCKET=backups \
+            -e S3_ACCESS_KEY_ID=S3RVER -e S3_SECRET_ACCESS_KEY=S3RVER \
             -e BACKUP_NAME=app -e SCHEDULE=once dumpling-backup:e2e | tee run.log
           grep -q "Verified: 1 table with data" run.log
-          grep -q "^.*OK app:" run.log
-      - name: the object is in the bucket and restores with pg_restore
+          grep -q " OK app:" run.log
+      - name: exactly one object, and it restores with every row
         run: |
-          docker run --rm --network host --entrypoint sh amazon/aws-cli:latest -c \
-            "AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://backups/app/ --recursive" | tee ls.log
-          test "$(wc -l < ls.log)" -eq 1
-          key=$(awk '{print $4}' ls.log)
-          docker run --rm --network host --entrypoint sh amazon/aws-cli:latest -c \
-            "AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 cp s3://backups/$key /tmp/x.dump >/dev/null && cat /tmp/x.dump" > app.dump
+          ls -la /tmp/s3/backups/app/
+          test "$(ls /tmp/s3/backups/app/ | grep -c '\._S3rver_object$')" -eq 1
+          cp /tmp/s3/backups/app/*._S3rver_object app.dump
           docker run --rm -i --network host -e PGPASSWORD=pgpass postgres:17 sh -c \
-            "cat > /tmp/app.dump && psql -h 127.0.0.1 -U postgres -d postgres -c 'create database restored' >/dev/null && pg_restore --no-owner -h 127.0.0.1 -U postgres -d restored /tmp/app.dump && psql -h 127.0.0.1 -U postgres -d restored -tAc 'select count(*) from t'" < app.dump | tee count.log
+            "cat > /tmp/app.dump && psql -q -h 127.0.0.1 -U postgres -d postgres -c 'create database restored' && pg_restore --no-owner -h 127.0.0.1 -U postgres -d restored /tmp/app.dump && psql -h 127.0.0.1 -U postgres -d restored -tAc 'select count(*) from t'" < app.dump | tee count.log
           test "$(tail -1 count.log)" = "5000"
       - name: a wrong password exits 1 and leaves nothing behind
         run: |
           set +e
           docker run --rm --network host \
             -e DATABASE_URL='postgresql://postgres:wrong@127.0.0.1:5432/app?sslmode=disable' \
-            -e S3_ENDPOINT=http://127.0.0.1:9000 -e S3_FORCE_PATH_STYLE=true -e S3_BUCKET=backups \
-            -e S3_ACCESS_KEY_ID=minioadmin -e S3_SECRET_ACCESS_KEY=minioadmin \
+            -e S3_ENDPOINT=http://127.0.0.1:4568 -e S3_FORCE_PATH_STYLE=true -e S3_BUCKET=backups \
+            -e S3_ACCESS_KEY_ID=S3RVER -e S3_SECRET_ACCESS_KEY=S3RVER \
             -e BACKUP_NAME=bad -e SCHEDULE=once dumpling-backup:e2e; code=$?
           set -e
           test "$code" -eq 1
-          docker run --rm --network host --entrypoint sh amazon/aws-cli:latest -c \
-            "AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://backups/bad/ --recursive" | tee bad.log || true
-          test ! -s bad.log
+          test -z "$(ls -A /tmp/s3/backups/bad 2>/dev/null)"
