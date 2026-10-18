@@ -128,15 +128,54 @@ describe.skipIf(!PGBIN)("postgres -> s3 (real pg_dump, fake S3)", () => {
     expect(toc).toMatch(/TABLE DATA public t postgres/);
   });
 
-  it("an archive the restore tool cannot read is a failed run, with the file kept", async () => {
+  it("a restore check that cannot run is a failed run, with the file kept", async () => {
     await wait(1100);
-    const cfg = loadConfig({ ...env, BACKUP_NAME: "unverified", PG_RESTORE_BIN: "/nonexistent/pg_restore" });
+    const cfg = loadConfig({ ...env, BACKUP_NAME: "unchecked", PG_RESTORE_BIN: "/nonexistent/pg_restore" });
     const r = await runBackup(cfg, { log });
     expect(r.status).toBe("failed");
     expect(r.verified).toBe(false);
-    expect(r.error).toMatch(/^Archive not verified: pg_restore could not read the archive: \/nonexistent\/pg_restore/);
-    expect(r.objectKey).toMatch(/^team\/unverified\//);
-    expect((await listBackups(cfg.storage, "unverified")).map((o) => o.key)).toEqual([r.objectKey]); // kept for inspection
+    expect(r.error).toMatch(/^Archive not checked: the restore check could not run \(\/nonexistent\/pg_restore: spawn/);
+    expect(r.objectKey).toMatch(/^team\/unchecked\//);
+    expect((await listBackups(cfg.storage, "unchecked")).map((o) => o.key)).toEqual([r.objectKey]); // probably a fine backup
+  });
+
+  it("an archive the restore tool rejects is a failed run, deleted, and retention is skipped", async () => {
+    const cfg = loadConfig({ ...env, BACKUP_NAME: "rejected", KEEP_LAST: "2" });
+    const goods: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      await wait(1100);
+      const g = await runBackup(cfg, { log });
+      expect(g.status, g.error).toBe("success");
+      goods.push(g.objectKey!);
+    }
+    await wait(1100);
+    const garbage = path.join(pgdir, "garbage-dump.sh");
+    fs.writeFileSync(garbage, "#!/bin/sh\nhead -c 65536 /dev/urandom\nexit 0\n", { mode: 0o755 });
+    const r = await runBackup(loadConfig({ ...env, BACKUP_NAME: "rejected", KEEP_LAST: "1", PG_DUMP_BIN: garbage }), { log });
+    expect(r.status).toBe("failed");
+    expect(r.error).toMatch(/^Archive not verified: pg_restore could not read the archive/);
+    expect(r.objectKey).toBeUndefined();
+    // The rejected file is gone, and KEEP_LAST=1 did not run: both verified backups are still there.
+    expect((await listBackups(cfg.storage, "rejected")).map((o) => o.key).sort()).toEqual([...goods].sort());
+  });
+
+  it("a checker still reading when the dump stream ends is not killed, and the backup verifies", async () => {
+    await wait(1100);
+    const slow = path.join(pgdir, "slow-check.sh");
+    // Reads the whole archive, then answers after the stream has ended: a busy machine, in slow motion.
+    fs.writeFileSync(slow, '#!/bin/sh\ncat >/dev/null\nsleep 0.5\necho "3; 0 0 TABLE public t postgres"\nexit 0\n', { mode: 0o755 });
+    const cfg = loadConfig({ ...env, BACKUP_NAME: "slowcheck", PG_RESTORE_BIN: slow });
+    const r = await runBackup(cfg, { log });
+    expect(r.status, r.error).toBe("success");
+    expect(r.verified).toBe(true);
+    expect((await listBackups(cfg.storage, "slowcheck")).map((o) => o.key)).toEqual([r.objectKey]);
+  });
+
+  it("an empty database is a verified backup", async () => {
+    execFileSync(`${PGBIN}/psql`, ["-h", "127.0.0.1", "-p", String(pgPort), "-U", "postgres", "-d", "postgres", "-c", "create database empty_app"]);
+    const r = await runBackup(loadConfig({ ...env, DATABASE_URL: `postgresql://postgres@127.0.0.1:${pgPort}/empty_app?sslmode=disable`, BACKUP_NAME: "empty" }), { log });
+    expect(r.status, r.error).toBe("success");
+    expect(r.verifyNote).toMatch(/database is empty/);
   });
 
   it("fails cleanly on a bad database and leaves no object behind", async () => {

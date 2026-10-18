@@ -10,9 +10,9 @@ Scheduled `pg_dump` / `mysqldump` backups, streamed straight into your own S3-co
 2026-10-18T02:00:04.302Z OK app: 48211734 bytes, verified (142 tables with data, 96 indexes, 611 entries), 3890 ms
 ```
 
-Why another backup container: the ones most people run (`schickling/postgres-backup-s3`,
-`eeshugerman/postgres-backup-s3`) are unmaintained, and none of them tells you whether the file
-that landed in the bucket would actually restore. This one feeds the dump through `pg_restore --list`
+Why another backup container: of the ones most people run, `eeshugerman/postgres-backup-s3` is
+archived and the `schickling/postgres-backup-s3` image on Docker Hub has not been rebuilt since 2022,
+and neither tells you whether the file that landed in the bucket would actually restore. This one feeds the dump through `pg_restore --list`
 as it streams (or checks `mysqldump`'s completion trailer) and marks the run failed, with exit code 1
 and a webhook call, if the archive is unreadable. A dump tool that dies is caught separately: its
 partial object is deleted.
@@ -20,7 +20,7 @@ partial object is deleted.
 - **PostgreSQL** (custom format, `pg_restore`-ready) and **MySQL / MariaDB** (gzipped SQL)
 - **Any S3-compatible bucket**: Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, Hetzner Object Storage, MinIO
 - **Streams**: the dump never touches local disk; a 50 GB database needs no 50 GB volume
-- **Verified**: `pg_restore --list` on the stream for Postgres, trailer check for MySQL; an unreadable archive is a failed run (the file is kept for inspection), never a green tick
+- **Verified**: `pg_restore --list` on the stream for Postgres, trailer check for MySQL; an archive the restore tool rejects is a failed run and is deleted, never a green tick
 - **Safe by construction**: a dump tool that exits non-zero fails the upload; stalls are killed; partial objects are removed; retention only ever deletes files this tool wrote
 - **Retention** by count and/or age; **encryption** with an OpenSSL-compatible passphrase; **alerts** to Slack, Discord or any webhook; **healthcheck** ping (healthchecks.io style) and a Docker `HEALTHCHECK`
 - Runs as a long-lived container with its own cron, or as a one-shot (`SCHEDULE=once`) for Render cron jobs, Railway cron schedules and GitHub Actions
@@ -181,17 +181,20 @@ restored is a hypothesis.
 
 The raw dump is tapped before compression and encryption. For PostgreSQL the tap is piped into
 `pg_restore --list`, which parses the custom-format archive and prints its table of contents; the run
-is marked verified only if that succeeds and lists at least one object, and the log shows what was
-found ("142 tables with data, 96 indexes, 611 entries"). For MySQL the stream is checked for
+is marked verified only if that succeeds, and the log shows what was found ("142 tables with data,
+96 indexes, 611 entries", or "database is empty" for a database with nothing in it yet). For MySQL the stream is checked for
 `mysqldump`'s `-- Dump completed` trailer, which a truncated dump never has, and `CREATE TABLE`
 statements are counted. A run whose archive fails that check is reported as failed: exit code 1 in
-`once` mode, `backup.failed` on the webhook, unhealthy in the status file. The file itself is kept so
-you can look at it, and retention is skipped so no verified older backup is deleted to make room for
-it. Independently of that, if the dump tool exits non-zero the upload is failed and the partial
+`once` mode, `backup.failed` on the webhook, unhealthy in the status file. The rejected file is
+deleted (left under a backup name it would count toward `KEEP_LAST` and could push verified backups
+out later), and retention is skipped for that run. If the check itself could not run (`pg_restore`
+missing or unusable, or no answer within 60 seconds), the run fails as "Archive not checked" and the
+file is kept, since it is probably a good backup. Independently of that, if the dump tool exits non-zero the upload is failed and the partial
 object deleted, so a `pg_dump` that died halfway is never left in the bucket as a plausible-looking
 file.
 
-This proves the archive is well-formed and complete, which catches the common silent failures. It
+Together with the dump tool's exit code, this proves the archive is well-formed and complete, which
+catches the common silent failures. It
 does not prove the data restores into a live server with your extensions and roles; that is what the
 restore drill above is for.
 

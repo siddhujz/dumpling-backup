@@ -31,6 +31,8 @@ export interface RunOptions {
   log?: (line: string) => void;
 }
 
+const VERIFY_TIMEOUT = "verification timed out";
+
 /**
  * One backup: dump -> exit gate -> verifier tap -> (gzip for mysql) -> (encrypt) -> multipart
  * upload, then retention. Nothing touches local disk. Any limit (stall, wall clock, size cap,
@@ -47,7 +49,19 @@ export async function runBackup(cfg: Config, opts: RunOptions = {}): Promise<Run
   const { cmd, args, envVars } = buildDumpCommand(cfg, d, { routines: opts.routines });
   log(`Running ${cmd} for ${d.engine} ${d.host}:${d.port}/${d.dbName} -> s3://${cfg.storage.bucket}/${key}`);
 
-  const child = spawn(cmd, args, { env: envVars, stdio: ["ignore", "pipe", "pipe"] });
+  // Restore verification taps the raw dump before compression and encryption. Created before the dump
+  // so a checker that cannot start never leaves the dump running, and so abort() can stop it.
+  const verifier = createDumpVerifier(d.engine, cfg.pgRestoreBin, childEnv({}));
+  const child = (() => {
+    try {
+      const c = spawn(cmd, args, { env: envVars, stdio: ["ignore", "pipe", "pipe"] });
+      if (!c.stdout || !c.stderr) throw new Error(`${cmd} could not be started (no output pipes)`); // EMFILE returns a pipeless child
+      return c;
+    } catch (e) {
+      verifier.cancel();
+      throw e;
+    }
+  })();
   let stderr = "";
   child.stderr.on("data", (c) => {
     stderr += c.toString();
@@ -64,6 +78,7 @@ export async function runBackup(cfg: Config, opts: RunOptions = {}): Promise<Run
     if (abortReason) return;
     abortReason = reason;
     child.kill("SIGKILL");
+    verifier.cancel();
     uploadAbort.abort();
   };
   const onExternalAbort = () => abort("shutting down");
@@ -95,8 +110,6 @@ export async function runBackup(cfg: Config, opts: RunOptions = {}): Promise<Run
     },
   });
 
-  // Restore verification taps the raw dump before compression and encryption.
-  const verifier = createDumpVerifier(d.engine, cfg.pgRestoreBin, childEnv({}));
   const stages: NodeJS.ReadWriteStream[] = [exitGate, verifier.tap];
   if (d.engine === "mysql") stages.push(createGzip({ level: 6 }));
   if (cfg.passphrase) stages.push(createOpenSslEncryptStream(cfg.passphrase));
@@ -121,8 +134,10 @@ export async function runBackup(cfg: Config, opts: RunOptions = {}): Promise<Run
     if (code !== 0) throw new Error(`${cmd} exited with code ${code}: ${stderr.trim() || "(no stderr)"}`);
     if (bytes === 0) throw new Error("Dump produced 0 bytes");
     log(`Uploaded ${bytes} bytes in ${Date.now() - started} ms`);
-    verification = await Promise.race([verifier.result, new Promise<{ verified: boolean; note: string }>((r) => setTimeout(() => r({ verified: false, note: "verification timed out" }), 60_000).unref())]);
-    if (verification.note === "verification timed out") verifier.cancel();
+    let checkTimer: NodeJS.Timeout | undefined;
+    verification = await Promise.race([verifier.result, new Promise<{ verified: boolean; note: string }>((r) => (checkTimer = setTimeout(() => r({ verified: false, note: VERIFY_TIMEOUT }), 60_000)))]);
+    clearTimeout(checkTimer);
+    if (verification.note === VERIFY_TIMEOUT) verifier.cancel();
     log(`${verification.verified ? "Verified" : "Not verified"}: ${verification.note}`);
   } catch (e) {
     child.kill("SIGKILL");
@@ -153,14 +168,28 @@ export async function runBackup(cfg: Config, opts: RunOptions = {}): Promise<Run
     return fail(msg);
   }
 
-  // An archive the restore tool cannot read is a failed run: exit code, status file and webhook all say so.
-  // The object is kept (it may still be partially useful and the user should look at it); retention is
-  // skipped so no older, verified backup is deleted to make room for an unverified one.
+  clearInterval(stallTimer); // the dump has ended; only the wall clock bounds the check and the cleanup below
+
+  // No green tick without a check: exit code, status file and webhook all say so, and retention is skipped.
+  // An archive the restore tool rejected is deleted like a dump that died: it is not a backup, and left
+  // under a backup name it would count toward KEEP_LAST and could push verified backups out later.
+  // A backup nobody could check (pg_restore missing, timeout, abort) is kept: it is probably fine.
   if (!verification?.verified) {
-    cleanup();
     const note = verification?.note ?? "no verification result";
-    log(`FAILED: archive not verified (${note}); the uploaded file was kept at ${key}`);
-    return { status: "failed", error: `Archive not verified: ${note}`.slice(0, 500), objectKey: key, sizeBytes: bytes, durationMs: Date.now() - started, verified: false, verifyNote: note };
+    const unchecked = !!abortReason || note === VERIFY_TIMEOUT || note.startsWith(`${cfg.pgRestoreBin}:`);
+    if (unchecked) {
+      cleanup();
+      log(`FAILED: restore check could not run (${note}); the uploaded file was kept at ${key}`);
+      return { status: "failed", error: (abortReason ?? `Archive not checked: the restore check could not run (${note}); the file was kept.`).slice(0, 500), objectKey: key, sizeBytes: bytes, durationMs: Date.now() - started, verified: false, verifyNote: abortReason ? "check cancelled" : note };
+    }
+    try {
+      await deleteKeys(cfg.storage, [key], uploadAbort.signal);
+      log(`FAILED: archive not verified (${note}); the uploaded file was deleted`);
+    } catch (e) {
+      log(`FAILED: archive not verified (${note}); deleting the uploaded file ${key} also failed: ${describeS3Error(e)}`);
+    }
+    cleanup();
+    return { status: "failed", error: `Archive not verified: ${note}`.slice(0, 500), sizeBytes: bytes, durationMs: Date.now() - started, verified: false, verifyNote: note };
   }
 
   // Retention. The wall clock and the abort stay armed: listing and deleting talk to the same endpoint and must be bounded too.

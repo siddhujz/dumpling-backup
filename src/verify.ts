@@ -35,6 +35,8 @@ function pgVerifier(bin: string, childEnvVars: NodeJS.ProcessEnv): DumpVerifier 
   child.stderr.on("data", (c) => {
     if (err.length < 2000) err += c.toString();
   });
+  let spawnError = "";
+  let stopped = ""; // set when we killed the checker or a signal did: says nothing about the archive
   let dead = false;
   let wake: (() => void) | null = null; // a transform waiting for drain must not wait forever if the checker dies
   const giveUp = () => {
@@ -46,13 +48,17 @@ function pgVerifier(bin: string, childEnvVars: NodeJS.ProcessEnv): DumpVerifier 
   child.on("exit", giveUp);
   const exit = new Promise<number>((resolve) => {
     child.on("error", (e) => {
-      err = `${bin}: ${(e as Error).message}`; // a missing or unusable pg_restore reads as such, not as a bad archive
+      spawnError = `${bin}: ${(e as Error).message}`; // a missing or unusable pg_restore reads as such, not as a bad archive
       resolve(-1);
     });
-    child.on("close", (code) => resolve(code ?? -1));
+    child.on("close", (code, signal) => {
+      if (signal && !stopped) stopped = `killed by ${signal}`;
+      resolve(code ?? -1);
+    });
   });
   const cancel = () => {
     dead = true;
+    if (child.exitCode === null && child.signalCode === null) stopped = "check stopped before it finished";
     child.kill("SIGKILL");
     wake?.();
   };
@@ -74,19 +80,25 @@ function pgVerifier(bin: string, childEnvVars: NodeJS.ProcessEnv): DumpVerifier 
       if (!dead) child.stdin.end();
       cb();
     },
-    // Pipeline teardown (dump died, abort, S3 error) destroys the tap: the checker must go with it,
-    // or a failing run leaks one blocked pg_restore.
+    // A failing pipeline (dump died, abort, S3 error) destroys the tap with an error: the checker must go
+    // with it, or a failing run leaks one blocked pg_restore. A clean end also destroys the tap
+    // (autoDestroy) while pg_restore may still be reading the last chunk; killing it then reported a
+    // valid archive as unreadable. The caller's 60 s timer bounds a checker that never finishes.
     destroy(err, cb) {
-      cancel();
+      if (err) cancel();
       cb(err);
     },
   });
   const result = exit.then((code) => {
+    if (spawnError) return { verified: false, note: spawnError };
+    // Same prefix as a spawn error, so the run keeps the file: a stopped check is not a rejected archive.
+    if (stopped) return { verified: false, note: `${bin}: ${stopped}` };
     if (code !== 0) return { verified: false, note: `pg_restore could not read the archive${err.trim() ? `: ${err.trim().split("\n")[0].slice(0, 160)}` : ""}` };
     const tables = (out.match(/ TABLE DATA /g) ?? []).length;
     const indexes = (out.match(/ INDEX /g) ?? []).length;
     const entries = out.split("\n").filter((l) => /^\d+;/.test(l)).length;
-    if (entries === 0) return { verified: false, note: "archive lists no objects" };
+    // An empty database dumps to a valid archive with no entries; the restore tool accepted it, which is the question.
+    if (entries === 0) return { verified: true, note: "database is empty (no tables or other objects)" };
     return { verified: true, note: `${tables} table${tables === 1 ? "" : "s"} with data, ${indexes} index${indexes === 1 ? "" : "es"}, ${entries} entries` };
   });
   return { tap, result, cancel };
