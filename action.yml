@@ -55,7 +55,8 @@ inputs:
     default: ""
 runs:
   using: docker
-  image: Dockerfile
+  # The published image (PostgreSQL 18 client); nothing is built on your runner.
+  image: docker://ghcr.io/siddhujz/dumpling-backup:18
   env:
     SCHEDULE: once
     DATABASE_URL: ${{ inputs.database_url }}

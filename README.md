@@ -93,7 +93,8 @@ Reference the database's variables rather than copying them:
 `DATABASE_URL=${{Postgres.DATABASE_URL}}` (or `DATABASE_PRIVATE_URL` on older projects).
 
 ### Render
-[`render.yaml`](render.yaml) defines a cron job from the published image with `SCHEDULE=once`. Use the
+[`render.yaml`](render.yaml) defines a cron job from the published image with `SCHEDULE=once` (the
+file is written to Render's Blueprint spec but has not been deployed by us yet; tell us if it needs a fix). Use the
 database's **external** connection string; Render cron jobs run outside the private network of a
 single service group unless they are in the same Blueprint.
 
@@ -107,7 +108,7 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - uses: siddhujz/dumpling-backup@main
+      - uses: siddhujz/dumpling-backup@v0.1.0
         with:
           database_url: ${{ secrets.DATABASE_URL }}
           s3_endpoint: https://<accountid>.r2.cloudflarestorage.com
@@ -117,9 +118,9 @@ jobs:
           keep_last: "14"
 ```
 The database must be reachable from GitHub's runners (a public host with TLS, or a hosted provider
-such as Neon, Supabase's session pooler, Railway's TCP proxy). The action builds the image from this
-repository on each run (two to three minutes) and uses the PostgreSQL 18 client; pin a release tag
-instead of `@main` once one exists.
+such as Neon, Supabase's session pooler, Railway's TCP proxy). The action pulls the published
+`ghcr.io/siddhujz/dumpling-backup:18` image (PostgreSQL 18 client); a run takes well under a minute
+plus the dump itself.
 
 ### Kubernetes, Nomad, a plain VM
 Any scheduler that can run a container with environment variables works: use `SCHEDULE=once` under
