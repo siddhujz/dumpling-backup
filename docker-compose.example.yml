@@ -1,0 +1,19 @@
+# Copy next to your own compose file, or merge the service into it. Everything is environment
+# variables; see README.md for the full list. The container keeps no state.
+services:
+  backup:
+    image: ghcr.io/siddhujz/dumpling-backup:18 # match your PostgreSQL major: 16, 17 or 18
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://backup:${DB_PASSWORD}@db:5432/app?sslmode=disable
+      S3_ENDPOINT: https://<accountid>.r2.cloudflarestorage.com
+      S3_REGION: auto
+      S3_BUCKET: db-backups
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      BACKUP_NAME: app
+      SCHEDULE: "0 2 * * *" # 02:00 UTC daily
+      KEEP_LAST: "14"
+      # PASSPHRASE: ${BACKUP_PASSPHRASE}
+      # WEBHOOK_URL: https://hooks.slack.com/services/...
+      # HEALTHCHECK_URL: https://hc-ping.com/<uuid>

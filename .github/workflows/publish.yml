@@ -1,0 +1,65 @@
+# Images are published from version tags only (v0.1.0 -> :0.1.0-pg18, :18, :latest), never from a
+# bare push to main, and only after typecheck and tests pass in this same job.
+name: publish
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        pg: [16, 17, 18]
+    env:
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+      PG: ${{ matrix.pg }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+        env:
+          PGBIN: /usr/lib/postgresql/16/bin
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker Hub login (only when the DOCKERHUB_USERNAME variable is set)
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: tags
+        id: tags
+        shell: bash
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          v="${GITHUB_REF#refs/tags/v}"
+          tags="$repo:$PG,$repo:$v-pg$PG"
+          [ "$PG" = "18" ] && tags="$tags,$repo:latest"
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            hub="$DOCKERHUB_USERNAME/dumpling-backup"
+            tags="$tags,$hub:$PG,$hub:$v-pg$PG"
+            [ "$PG" = "18" ] && tags="$tags,$hub:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: PG_MAJOR=${{ matrix.pg }}
+          tags: ${{ steps.tags.outputs.tags }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=pg${{ matrix.pg }}
+          cache-to: type=gha,mode=max,scope=pg${{ matrix.pg }}

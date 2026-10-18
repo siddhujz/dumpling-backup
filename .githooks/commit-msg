@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Git commit-msg hook (enable once with: git config core.hooksPath .githooks)
+# Rejects commit messages that mention AI tooling or carry attribution trailers.
+if sed -E 's#\.claude(/[^ ]*)?##g; s#CLAUDE\.md##g' "$1" | grep -qiE 'claude|anthropic|copilot|co-authored-by|generated with|ai-generated|session_[0-9a-z]|chatgpt|openai'; then
+  echo "commit-msg: message must not mention AI tooling or contain attribution trailers." >&2
+  exit 1
+fi

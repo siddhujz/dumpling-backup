@@ -1,0 +1,74 @@
+name: Dumpling Backup
+description: Verified pg_dump / mysqldump backup streamed straight into your own S3-compatible bucket. Nothing stored anywhere else.
+author: siddhujz
+branding:
+  icon: database
+  color: orange
+inputs:
+  database_url:
+    description: postgres:// or mysql:// connection URL (use a secret)
+    required: true
+  s3_bucket:
+    description: Bucket name
+    required: true
+  s3_access_key_id:
+    description: Access key id (use a secret)
+    required: true
+  s3_secret_access_key:
+    description: Secret access key (use a secret)
+    required: true
+  s3_endpoint:
+    description: Endpoint URL for R2, B2, Wasabi, Spaces, Hetzner, MinIO; leave empty for Amazon S3
+    required: false
+    default: ""
+  s3_region:
+    description: Region ("auto" for R2)
+    required: false
+    default: auto
+  s3_prefix:
+    description: Key prefix inside the bucket
+    required: false
+    default: ""
+  s3_force_path_style:
+    description: "true" for MinIO and other path-style endpoints
+    required: false
+    default: "false"
+  backup_name:
+    description: Folder name in the bucket; defaults to the database name
+    required: false
+    default: ""
+  keep_last:
+    description: Keep this many newest backups (0 = keep all)
+    required: false
+    default: "0"
+  keep_days:
+    description: Delete backups older than this many days (0 = keep all)
+    required: false
+    default: "0"
+  passphrase:
+    description: Encrypt with this passphrase (OpenSSL-compatible AES-256-CBC); use a secret
+    required: false
+    default: ""
+  webhook_url:
+    description: Slack, Discord or generic webhook to post the result to; use a secret
+    required: false
+    default: ""
+runs:
+  using: docker
+  image: Dockerfile
+  env:
+    SCHEDULE: once
+    DATABASE_URL: ${{ inputs.database_url }}
+    S3_BUCKET: ${{ inputs.s3_bucket }}
+    S3_ACCESS_KEY_ID: ${{ inputs.s3_access_key_id }}
+    S3_SECRET_ACCESS_KEY: ${{ inputs.s3_secret_access_key }}
+    S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+    S3_REGION: ${{ inputs.s3_region }}
+    S3_PREFIX: ${{ inputs.s3_prefix }}
+    S3_FORCE_PATH_STYLE: ${{ inputs.s3_force_path_style }}
+    BACKUP_NAME: ${{ inputs.backup_name }}
+    KEEP_LAST: ${{ inputs.keep_last }}
+    KEEP_DAYS: ${{ inputs.keep_days }}
+    PASSPHRASE: ${{ inputs.passphrase }}
+    WEBHOOK_URL: ${{ inputs.webhook_url }}
+    NOTIFY_ON_SUCCESS: "true"

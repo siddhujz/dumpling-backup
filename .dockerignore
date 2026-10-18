@@ -1,0 +1,12 @@
+node_modules
+dist
+tests
+.env
+*.log
+.git
+.github
+.githooks
+README.md
+render.yaml
+action.yml
+docker-compose.example.yml

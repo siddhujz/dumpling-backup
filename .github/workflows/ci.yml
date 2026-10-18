@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # The runner image ships PostgreSQL 16 (initdb, pg_ctl, pg_dump); the integration test uses it.
+      - run: npm test
+        env:
+          PGBIN: /usr/lib/postgresql/16/bin
+      - run: npm run build
+      - name: docker build (pg 18)
+        run: docker build --build-arg PG_MAJOR=18 -t dumpling-backup:ci .
+      - name: image smoke test (config errors are reported, exit 2)
+        run: |
+          set +e
+          docker run --rm dumpling-backup:ci; code=$?
+          set -e
+          test "$code" -eq 2
