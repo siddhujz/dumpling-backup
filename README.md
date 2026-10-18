@@ -80,7 +80,10 @@ See [`docker-compose.example.yml`](docker-compose.example.yml). Put the service 
 and point `DATABASE_URL` at the service name; nothing needs to be exposed to the internet.
 
 ### Railway
-Two shapes work. Either way the container reaches your database over Railway's private network
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/dumpling-backup)
+
+The one-click template above asks for the four required variables and sets sensible defaults for
+the rest. Two shapes work. Either way the container reaches your database over Railway's private network
 (`<service>.railway.internal`), so the database needs no public TCP proxy and no allow-list.
 
 1. **Long-running service** (recommended): deploy this image as a new service, set the variables
