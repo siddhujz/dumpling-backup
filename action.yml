@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ""
   s3_force_path_style:
-    description: "true" for MinIO and other path-style endpoints
+    description: Set to "true" for MinIO and other path-style endpoints
     required: false
     default: "false"
   backup_name:

@@ -13,6 +13,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # An action.yml that does not parse breaks every `uses:` and hides the Marketplace option; v0.1.0
+      # and v0.1.1 shipped one (a description starting with a quoted word). Ruby is on the runner image.
+      - name: action.yml parses
+        run: |
+          ruby -ryaml -e 'a = YAML.load_file("action.yml"); abort "action.yml has no runs.image" unless a.dig("runs", "image")'
       - run: npm run typecheck
       # The runner image ships PostgreSQL 16 (initdb, pg_ctl, pg_dump); the integration test uses it.
       - run: npm test
