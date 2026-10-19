@@ -1,6 +1,6 @@
 {
   "name": "dumpling-backup",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Verified pg_dump / mysqldump backups streamed into your own S3-compatible bucket. One container, no state, no UI.",
   "license": "MIT",
   "private": true,

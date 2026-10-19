@@ -6,7 +6,7 @@ import { log, warn } from "./log";
 import { notify } from "./notify";
 import { writeStatus } from "./status";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 function main() {
   let cfg: Config;
