@@ -111,7 +111,7 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - uses: siddhujz/dumpling-backup@v0.1.2
+      - uses: siddhujz/dumpling-backup@v0.1.3
         with:
           database_url: ${{ secrets.DATABASE_URL }}
           s3_endpoint: https://<accountid>.r2.cloudflarestorage.com
