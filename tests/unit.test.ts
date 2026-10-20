@@ -62,6 +62,13 @@ describe("config", () => {
     }
   });
 
+  it("refuses Supabase's transaction pooler and accepts its session pooler", () => {
+    const url = (port: number) => `postgresql://postgres.abcdefgh:${encodeURIComponent(PASSWORD)}@aws-0-eu-central-1.pooler.supabase.com:${port}/postgres`;
+    expect(() => loadConfig({ ...BASE_ENV, DATABASE_URL: url(6543) })).toThrow(/transaction pooler.*port 5432/);
+    expect(loadConfig({ ...BASE_ENV, DATABASE_URL: url(5432) }).database.port).toBe(5432);
+    expect(loadConfig({ ...BASE_ENV, DATABASE_URL: "postgres://u:p@db.example.com:6543/appdb" }).database.port).toBe(6543);
+  });
+
   it("applies defaults and derives the backup name from the database", () => {
     const cfg = loadConfig({ ...BASE_ENV, DATABASE_URL: "postgres://u:p@h/appdb" });
     expect(cfg.backupName).toBe("appdb");

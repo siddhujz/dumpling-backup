@@ -119,15 +119,39 @@ jobs:
           s3_access_key_id: ${{ secrets.S3_ACCESS_KEY_ID }}
           s3_secret_access_key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
           keep_last: "14"
+          healthcheck_url: ${{ secrets.HEALTHCHECK_URL }}
 ```
 The database must be reachable from GitHub's runners (a public host with TLS, or a hosted provider
 such as Neon, Supabase's session pooler, Railway's TCP proxy). The action pulls the published
 `ghcr.io/siddhujz/dumpling-backup:18` image (PostgreSQL 18 client); a run takes well under a minute
 plus the dump itself.
 
+GitHub's schedule is best effort: [its documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+says scheduled runs can be delayed or dropped under load, and that in a **public** repository they
+are disabled after 60 days without repository activity. A run that never starts calls no webhook,
+so the failure is silence. Two cheap guards: keep `workflow_dispatch` so you can run it by hand, and
+set `healthcheck_url` to a heartbeat check (healthchecks.io's free plan, or any service that alerts
+when a ping does not arrive) with a period of one day and a grace of a few hours.
+
 ### Kubernetes, Nomad, a plain VM
 Any scheduler that can run a container with environment variables works: use `SCHEDULE=once` under
 an external scheduler (CronJob), or the internal cron under a Deployment with one replica.
+
+## Supabase
+
+- **Connect through the session pooler**: Connect → Session pooler, host
+  `aws-0-<region>.pooler.supabase.com`, port **5432**, user `postgres.<project-ref>`. The direct host
+  `db.<ref>.supabase.co` is IPv6-only unless the project has the IPv4 add-on, and GitHub's hosted
+  runners cannot reach it. The transaction pooler on port **6543** is refused at startup:
+  it drops session state between transactions, and [Supabase's guide](https://supabase.com/docs/guides/database/connecting-to-postgres)
+  lists `pg_dump` under direct and session connections only.
+- **Storage files are not in the dump.** [Supabase's backup docs](https://supabase.com/docs/guides/platform/backups):
+  "Database backups do not include objects you store via the Storage API"; the database holds only
+  their metadata. A restored dump can hold `storage.objects` rows that point at files you do not
+  have. If you use Storage, back up the buckets separately (for example with `rclone` through
+  Supabase's S3-compatible endpoint).
+- The Action uses the `:18` image, which dumps any older server; its files need `pg_restore` 18 or
+  newer (see [Restoring](#restoring)).
 
 ## Configuration
 
@@ -172,6 +196,10 @@ gunzip < 2026-10-18T02-00-00Z.sql.gz | mysql restored
 # Encrypted files first:
 openssl enc -d -aes-256-cbc -pbkdf2 -in 2026-10-18T02-00-00Z.dump.enc -out 2026-10-18T02-00-00Z.dump -pass pass:YOUR_PASSPHRASE
 ```
+
+A newer `pg_restore` reads archives from an older `pg_dump`; an older one refuses a newer archive
+("unsupported version in file header"). When you upgrade the image tag, upgrade the machine you
+would restore from first.
 
 Run a restore drill once a quarter: download the newest file, restore it into a throwaway database,
 count the rows in a table you care about, and write down how long it took. A backup you have never

@@ -151,6 +151,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const problems: string[] = [];
 
   const database = env.DATABASE_URL ? parseDatabaseUrl(env.DATABASE_URL, problems) : discreteDatabase(env, problems);
+  // Supabase's transaction pooler accepts the connection but drops session state between
+  // transactions; Supabase lists pg_dump under direct and session connections only.
+  if (database?.engine === "postgres" && database.port === 6543 && database.host.toLowerCase().endsWith(".pooler.supabase.com")) {
+    problems.push("That is Supabase's transaction pooler (port 6543), which cannot run pg_dump. Use the session pooler: the same host on port 5432");
+  }
 
   const bucket = env.S3_BUCKET ?? "";
   if (!bucket) problems.push("S3_BUCKET is required");

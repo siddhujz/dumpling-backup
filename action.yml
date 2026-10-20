@@ -53,6 +53,10 @@ inputs:
     description: Slack, Discord or generic webhook to post the result to; use a secret
     required: false
     default: ""
+  healthcheck_url:
+    description: Heartbeat URL (healthchecks.io style) pinged after every run, so an alert fires when the schedule stops running; use a secret
+    required: false
+    default: ""
 runs:
   using: docker
   # The published image (PostgreSQL 18 client); nothing is built on your runner.
@@ -72,4 +76,5 @@ runs:
     KEEP_DAYS: ${{ inputs.keep_days }}
     PASSPHRASE: ${{ inputs.passphrase }}
     WEBHOOK_URL: ${{ inputs.webhook_url }}
+    HEALTHCHECK_URL: ${{ inputs.healthcheck_url }}
     NOTIFY_ON_SUCCESS: "true"
